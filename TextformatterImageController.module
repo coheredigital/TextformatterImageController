@@ -1,0 +1,307 @@
+<?php
+
+/**
+ * HTML Image Controller Textformatter
+ *
+ * @copyright 2016, Adam Spruijt
+ *
+ * ProcessWire 2.x
+ * Copyright (C) 2010 by Ryan Cramer
+ * Licensed under GNU/GPL v2, see LICENSE.TXT
+ *
+ * http://www.processwire.com
+ * http://www.ryancramer.com
+ *
+ */
+
+require_once 'simple_html_dom.php';
+
+class TextformatterImageController extends Textformatter implements Module, ConfigurableModule {
+
+    public static function getModuleInfo() {
+        return array(
+            'title' => __("Image Controller", __FILE__),
+            'summary' => __("Adds helper classes and functionality to help developers better control consistency of image output", __FILE__),
+            'author' => 'Adam Spruijt',
+            'version' => 1,
+            'autoload' => false,
+        );
+    }
+
+    // public $str = null;
+    private $images = null; 
+    private $find = null; 
+    private $replace = null; 
+
+
+    //return the formatted string
+    public function format(&$str) {
+
+        $html = new simple_html_dom();
+        $html->load($str);
+
+        $this->images = $html->find('img');
+
+        if(!count($this->images)) return;
+
+        // create find & replace arrays
+        $this->getFindAndReplace();
+
+        // replace matched images
+        $str = count($this->replace) ? str_replace($this->find, $this->replace, $str) : $str;
+        // return $str;
+    }
+
+
+    protected  function isImageLarge($original_image)
+    {
+        // Apply max width / height if set
+        if ($original_image->width && $original_image->width > $this->max_width) return true;
+        if ($original_image->height && $original_image->height > $this->max_height) return true;
+
+        return false;
+
+    }
+
+    protected  function getImageSizes($original_image)
+    {
+        
+        $sizes = [
+            "width" => $original_image->width ?: 0,
+            "height" => $original_image->height ?: 0
+        ];
+
+
+
+        // Apply max width / height if set
+        if ($sizes["width"] && $sizes["width"] > $this->max_width) {
+            $sizes = [
+                "width" => $this->max_width,
+                "height" => 0
+            ];
+
+        }
+        else if ($sizes["height"] && $sizes["height"] > $this->max_height) {
+            $sizes = [
+                "width" => 0,
+                "height" => $this->max_height
+            ];
+        }
+
+        return $sizes;
+
+    }
+
+    protected function getPageimageBasename($src)
+    {
+        // get base name from src
+        $filename =  basename($src);
+
+        // get root filename
+        $filenameParts = explode('.', $filename);
+        $name = $filenameParts[0];
+        $ext = $filenameParts[count($filenameParts)-1];
+        return "{$name}.{$ext}";
+    }
+
+    protected function getPageimagePage($src)
+    {
+        $id = $this->getPageimageId($src); 
+        return $this->wire->pages->get($id);
+    }
+
+
+    protected function getPageimage($src)
+    {
+        
+        // get original image filename (base)
+        $filename = $this->getPageimageBasename($src);
+
+        // get page image is from
+        $page = $this->getPageimagePage($src);
+
+        foreach($page->fields as $field) {
+            if (! (bool) ($field->type instanceof FieldtypeImage)) continue;
+            if ($page->get($field->name)->has($filename)) {
+                return $page->get($field->name)->get($filename);
+            }
+        }
+    }
+
+    protected function getPageimageId($src)
+    {
+        $src = str_replace($this->wire->config->urls->files, "", $src);
+        $urlParts = explode("/", $src);
+        return (int) $urlParts[0];
+    }
+
+    public function getPageimageOrientation($image) {
+        return $image->width > $image->height ? "landscape" : "portrait";
+    }
+
+    protected function getImageClasses(Pageimage $image, $append_classes = "")
+    {
+        
+        // create array of all needed classes
+        $classes = [];
+        $classes[] = $this->use_wrapper ? "{$this->root_class}-wrapper" : $this->root_class;
+        $classes[] = "{$this->root_class}-" . $this->getPageimageOrientation($image);
+        $classes[] = $lazyLoad ? "lazyload" : "";
+
+        $classes = array_merge($classes, $this->getImageSizeClasses($image));
+
+        // add tag classes
+        if ($this->use_tagclasses) {
+            foreach ($image->tags as $tag) {
+                $classes[] = "{$this->root_class}-{$tag}";
+            }
+        }
+
+        if($original_image_classes) $classes[] = $original_image_classes;
+
+        // stringify image classes
+        $classes = trim(implode(" ", $classes ));
+        $classes = "{$classes}";
+
+        return $classes;
+
+    }
+
+    protected function getImageSizeClasses(Pageimage $image)
+    {
+        $image_size_classes = [];
+
+        $width = round($image->width/$this->size_class_round) * $this->size_class_round;
+        $image_size_classes["width"] = "{$this->root_class}-width-{$width}";
+
+        $height = round($image->height/$this->size_class_round) * $this->size_class_round;
+        $image_size_classes["height"] = "{$this->root_class}-height-{$height}";
+
+        return $image_size_classes;
+
+    }
+
+
+
+    protected function getImageAttributes(Pageimage $image)
+    {
+        
+        // width / height attributes
+        $attributes = [];
+        $attributes[] = "width='{$image->width}'";
+        $attributes[] = "height='{$image->height}'";
+    
+        // use data-src attribute to store src if lazyLoad option checked
+        if ($this->use_layload) {
+            $attributes[] = "data-src='{$image->url}'";
+        }
+        else{
+            $attributes[] = "src='{$image->url}'";
+        }
+        // stringify image attributes
+        $attributes = implode(" ", $attributes );
+
+        if ($this->img_attributes) {
+            $attributes = "{$attributes} {$this->img_attributes}";
+        }
+
+        return $attributes;
+
+    }
+
+    public function getDefaultShareButtons($image)
+    {
+        $url = rawurlencode($image->original->httpUrl);
+        $title = $image->page->get("headline|title");
+        
+        $share = "<div class='{$this->root_class}-share'>";
+        $share .= "<span class='{$this->root_class}-share-label'>Share<span class='share-label-extra'> this image</span></span>";
+        $share .= "<a class='{$this->root_class}-share-button {$this->root_class}-share-facebook ' href='https://www.facebook.com/sharer/sharer.php?u={$url}'>Facebook</a>";
+        $share .= "<a class='{$this->root_class}-share-button {$this->root_class}-share-twitter ' href='https://twitter.com/intent/tweet?text={$title}&url={$url}'>Twitter</a>";
+        $share .= "</div>";
+
+        return $share;
+    }
+
+    public function getFindAndReplace() {
+
+
+        // skip if no images in html
+        if (!count($this->images)) return;
+
+
+        foreach($this->images as $original_image) {
+
+            // clear ouput markup
+            $output = "";
+
+            // reset classes and attributes for wrapper and img
+            $img_classes = "";
+            $img_attributes = "";
+
+            $wrapper_classes = "";
+
+
+            // skip image not in PW 
+            if(strpos($original_image, $this->wire->config->urls->files) === false) continue;
+
+            // get PW Pageimage Object
+            
+            $image = $this->getPageimage("{$original_image->src}");
+
+            // skip this is we haven't a valid PW image.
+            if(!$image instanceof Pageimage) continue;
+            
+            // resize image if exceed maximums set in config
+            $image_sizes = $this->getImageSizes($original_image);
+            $image = $image->size($image_sizes["width"], $image_sizes["height"]);
+            
+
+            // setup img classes
+            if (!$this->use_wrapper) {
+                $img_classes = trim("{$this->img_classes} {$original_image->class}");
+                $img_classes = trim("{$img_classes} " . $this->getImageClasses($image));
+            }
+            else{
+                $wrapper_classes = trim("{$this->wrapper_classes} {$original_image->class}");
+                $wrapper_classes = trim("{$wrapper_classes} " . $this->getImageClasses($image));
+            }
+                        
+
+
+            // setup img attributes
+            $img_attributes = "{$this->img_attributes} " . $this->getImageAttributes($image);
+            
+
+            // create img markup
+            $output = "<img class='{$img_classes}' {$img_attributes} alt='{$image->description}' />";
+
+            // wrap in link if set
+            $output = $this->use_link ? "<a class='{$this->root_class}-link {$this->link_classes}' {$this->link_attributes} href='{$image->original->url}'>{$output}</a>" : $output;
+
+            // if there is a wrapper put width & alignment styles/classes to the wrapper.
+            if ($this->use_wrapper) {
+
+                // get share markup
+                if ($this->use_share && !$this->share_template) {
+                    $share = $this->getDefaultShareButtons($image);
+                }
+                elseif($this->use_share && $this->share_template){
+
+                }
+
+                // add caption if enabled
+                $caption = $this->use_caption && $image->description ? "<figcaption class='{$this->root_class}-caption {$this->caption_classes}' {$this->caption_attributes}>{$image->description}</figcaption>" : "";
+                // wrap existing output
+                $output = "<figure class='{$wrapper_classes}' {$this->wrapper_attributes} >{$share}{$output}{$caption}</figure>";
+            }
+
+            if (!$output) continue;
+            // add original image as string to find set
+            $this->find[] = "$original_image";   
+            $this->replace[] = $output;
+            
+        }
+        
+    }
+}
